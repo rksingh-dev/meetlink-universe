@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import MeetHeader from "@/components/MeetHeader";
 import VideoPlayer from "@/components/VideoPlayer";
@@ -29,51 +29,68 @@ const MeetingRoom = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isJoining, setIsJoining] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  const handleNewRemoteStream = useCallback((stream: MediaStream) => {
+    console.log("New remote stream received:", stream.id);
+    setRemoteStreams(prev => {
+      // Check if stream is already in the array to avoid duplicates
+      const exists = prev.some(s => 
+        s.id === stream.id || 
+        s.getTracks().some(t => stream.getTracks().some(st => st.id === t.id))
+      );
+      if (exists) return prev;
+      return [...prev, stream];
+    });
+  }, []);
+
+  const handleNewMessage = useCallback((message: Message) => {
+    setMessages(prev => [...prev, message]);
+    
+    // Show toast notification for new messages if chat is closed
+    if (!isChatOpen && message.sender !== 'You') {
+      toast({
+        title: `New message from ${message.sender}`,
+        description: message.text.length > 30 ? message.text.substring(0, 30) + '...' : message.text,
+      });
+    }
+  }, [isChatOpen, toast]);
 
   useEffect(() => {
     const initializeMedia = async () => {
       try {
         setIsJoining(true);
+        setConnectionError(null);
         
         // Get local media stream
         const stream = await webRTCService.getLocalStream();
         setLocalStream(stream);
         
+        // Set up event handlers for remote streams and messages
+        webRTCService.onNewRemoteStream(handleNewRemoteStream);
+        webRTCService.onMessage(handleNewMessage);
+        
         // Join the meeting room
         if (meetingId) {
           await webRTCService.joinRoom(meetingId);
-        }
-        
-        // Listen for remote streams
-        webRTCService.onNewRemoteStream((stream) => {
-          setRemoteStreams((prev) => {
-            // Check if stream is already in the array to avoid duplicates
-            const exists = prev.some(s => 
-              s.id === stream.id || 
-              s.getTracks().some(t => stream.getTracks().some(st => st.id === t.id))
-            );
-            if (exists) return prev;
-            return [...prev, stream];
+          
+          toast({
+            title: "Meeting joined successfully",
+            description: `You've joined meeting: ${meetingId}`,
           });
-        });
-        
-        // Listen for chat messages
-        webRTCService.onMessage((message) => {
-          setMessages((prev) => [...prev, message as Message]);
-        });
-        
-        toast({
-          title: "Meeting joined successfully",
-          description: `You've joined meeting: ${meetingId}`,
-        });
+        }
         
         setIsJoining(false);
       } catch (error) {
         console.error("Failed to initialize media:", error);
         setIsJoining(false);
+        
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        setConnectionError(errorMessage);
+        
         toast({
           title: "Failed to join meeting",
-          description: "Could not connect to the meeting room",
+          description: "Could not connect to the meeting room: " + errorMessage,
           variant: "destructive",
         });
       }
@@ -84,7 +101,7 @@ const MeetingRoom = () => {
     return () => {
       webRTCService.disconnect();
     };
-  }, [meetingId, toast]);
+  }, [meetingId, toast, handleNewRemoteStream, handleNewMessage]);
 
   const toggleAudio = () => {
     if (localStream) {
@@ -130,6 +147,12 @@ const MeetingRoom = () => {
     } catch (error) {
       console.error("Error toggling screen share:", error);
       setIsScreenSharing(false);
+      
+      toast({
+        title: "Screen sharing failed",
+        description: "Could not start screen sharing. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -168,6 +191,29 @@ const MeetingRoom = () => {
             <p className="mt-4 text-lg">Joining the meeting...</p>
           </div>
         </div>
+      ) : connectionError ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-md mx-auto p-4">
+            <div className="text-4xl text-destructive mb-4">⚠️</div>
+            <h2 className="text-xl font-semibold mb-2">Connection Failed</h2>
+            <p className="mb-4 text-muted-foreground">{connectionError}</p>
+            <p className="mb-6">Please check your camera/microphone permissions and internet connection.</p>
+            <div className="flex justify-center gap-4">
+              <button 
+                onClick={() => window.location.reload()} 
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md"
+              >
+                Try Again
+              </button>
+              <button 
+                onClick={() => navigate('/')} 
+                className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md"
+              >
+                Back to Home
+              </button>
+            </div>
+          </div>
+        </div>
       ) : (
         <main className="flex-1 flex flex-col p-4 overflow-hidden">
           <div 
@@ -201,7 +247,7 @@ const MeetingRoom = () => {
             
             {/* Remote users */}
             {remoteStreams.map((stream, index) => (
-              <div key={index} className="video-container">
+              <div key={stream.id} className="video-container">
                 <VideoPlayer 
                   stream={stream} 
                   username={`User ${index + 1}`}

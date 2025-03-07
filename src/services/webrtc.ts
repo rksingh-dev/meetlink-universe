@@ -1,444 +1,339 @@
 
-import { toast } from "@/components/ui/use-toast";
-import { Socket, io } from "socket.io-client";
+import { io, Socket } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
 
-type MediaStreamHandler = (stream: MediaStream) => void;
-type DataChannelMessageHandler = (message: any) => void;
+interface PeerConnection {
+  id: string;
+  connection: RTCPeerConnection;
+  stream?: MediaStream;
+}
 
-// Configuration for WebRTC connections
-const configuration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-  ]
-};
-
-// For demo purposes, we'll use a free public signaling server
-// In production, you would use your own secure server
-const SIGNALING_SERVER = "https://simple-signal-demo.onrender.com";
+interface Message {
+  id: string;
+  sender: string;
+  text: string;
+  timestamp: Date;
+}
 
 class WebRTCService {
+  private socket: Socket | null = null;
   private localStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
-  private onNewRemoteStreamCallbacks: MediaStreamHandler[] = [];
-  private onMessageCallbacks: DataChannelMessageHandler[] = [];
-  private remoteStreams: Map<string, MediaStream> = new Map();
-  private peerConnections: Map<string, RTCPeerConnection> = new Map();
-  private dataChannels: Map<string, RTCDataChannel> = new Map();
-  private socket: Socket | null = null;
-  private userId: string = uuidv4();
-  private roomId: string | null = null;
-  
+  private peerConnections: Map<string, PeerConnection> = new Map();
+  private localId: string = '';
+  private username: string = '';
+  private roomId: string = '';
+  private onNewStreamCallback: ((stream: MediaStream) => void) | null = null;
+  private onMessageCallback: ((message: Message) => void) | null = null;
+  private iceServers = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ],
+  };
+
   constructor() {
-    // Initialize socket connection
-    this.setupSocketConnection();
+    this.localId = uuidv4();
+    this.username = `User_${this.localId.substring(0, 5)}`;
   }
 
-  private setupSocketConnection() {
-    try {
-      this.socket = io(SIGNALING_SERVER);
-      
-      this.socket.on('connect', () => {
-        console.log('Connected to signaling server');
-      });
-      
-      this.socket.on('disconnect', () => {
-        console.log('Disconnected from signaling server');
-      });
-      
-      this.socket.on('error', (error) => {
-        console.error('Socket error:', error);
-      });
-      
-      // Handle incoming signaling messages
-      this.socket.on('signal', async (data) => {
-        try {
-          if (data.userId === this.userId) return; // Ignore messages from self
-          
-          if (data.type === 'offer') {
-            await this.handleOffer(data);
-          } else if (data.type === 'answer') {
-            await this.handleAnswer(data);
-          } else if (data.type === 'ice-candidate') {
-            await this.handleIceCandidate(data);
-          } else if (data.type === 'user-disconnected') {
-            this.handleUserDisconnected(data.userId);
-          }
-        } catch (error) {
-          console.error('Error handling signal:', error);
-        }
-      });
-      
-      this.socket.on('chat-message', (message) => {
-        // Notify all callbacks about the new message
-        this.onMessageCallbacks.forEach(callback => callback(message));
-      });
-    } catch (error) {
-      console.error('Error setting up socket connection:', error);
-      toast({
-        title: "Connection Error",
-        description: "Failed to connect to signaling server",
-        variant: "destructive",
-      });
-    }
-  }
+  private setupSocketEvents(): void {
+    if (!this.socket) return;
 
-  private async createPeerConnection(userId: string): Promise<RTCPeerConnection> {
-    try {
-      const peerConnection = new RTCPeerConnection(configuration);
-      
-      // Add local tracks to the peer connection
-      if (this.localStream) {
-        this.localStream.getTracks().forEach(track => {
-          peerConnection.addTrack(track, this.localStream!);
-        });
-      }
-      
-      // Create data channel for chat
-      const dataChannel = peerConnection.createDataChannel('chat');
-      this.setupDataChannel(dataChannel, userId);
-      
-      // Handle ICE candidates
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          this.sendSignal({
-            type: 'ice-candidate',
-            userId: this.userId,
-            targetUserId: userId,
-            candidate: event.candidate,
-            roomId: this.roomId
-          });
-        }
-      };
-      
-      // Handle connection state changes
-      peerConnection.onconnectionstatechange = () => {
-        console.log(`Connection state for ${userId}:`, peerConnection.connectionState);
-      };
-      
-      // Handle incoming tracks (remote streams)
-      peerConnection.ontrack = (event) => {
-        console.log(`Received track from ${userId}`);
-        const remoteStream = new MediaStream();
-        event.streams[0].getTracks().forEach(track => {
-          remoteStream.addTrack(track);
-        });
-        
-        this.remoteStreams.set(userId, remoteStream);
-        this.onNewRemoteStreamCallbacks.forEach(callback => callback(remoteStream));
-      };
-      
-      // Handle data channel events
-      peerConnection.ondatachannel = (event) => {
-        this.setupDataChannel(event.channel, userId);
-      };
-      
-      this.peerConnections.set(userId, peerConnection);
-      return peerConnection;
-    } catch (error) {
-      console.error('Error creating peer connection:', error);
-      throw error;
-    }
-  }
+    this.socket.on('user-joined', async (data: { userId: string }) => {
+      console.log('New user joined:', data.userId);
+      await this.createPeerConnection(data.userId, true);
+    });
 
-  private setupDataChannel(dataChannel: RTCDataChannel, userId: string) {
-    dataChannel.onopen = () => {
-      console.log(`Data channel with ${userId} is open`);
-      this.dataChannels.set(userId, dataChannel);
-    };
-    
-    dataChannel.onclose = () => {
-      console.log(`Data channel with ${userId} is closed`);
-      this.dataChannels.delete(userId);
-    };
-    
-    dataChannel.onmessage = (event) => {
+    this.socket.on('offer', async (data: { userId: string, offer: RTCSessionDescriptionInit }) => {
+      console.log('Received offer from:', data.userId);
+      const peerConnection = await this.createPeerConnection(data.userId, false);
+      
       try {
-        const message = JSON.parse(event.data);
-        this.onMessageCallbacks.forEach(callback => callback(message));
+        await peerConnection.connection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await peerConnection.connection.createAnswer();
+        await peerConnection.connection.setLocalDescription(answer);
+        
+        this.socket?.emit('answer', {
+          userId: data.userId,
+          answer: peerConnection.connection.localDescription
+        });
       } catch (error) {
-        console.error('Error parsing message:', error);
+        console.error('Error handling offer:', error);
       }
-    };
-  }
+    });
 
-  private async handleOffer(data: any) {
-    try {
-      const peerConnection = await this.createPeerConnection(data.userId);
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-      
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      
-      this.sendSignal({
-        type: 'answer',
-        userId: this.userId,
-        targetUserId: data.userId,
-        answer,
-        roomId: this.roomId
-      });
-    } catch (error) {
-      console.error('Error handling offer:', error);
-    }
-  }
-
-  private async handleAnswer(data: any) {
-    try {
+    this.socket.on('answer', async (data: { userId: string, answer: RTCSessionDescriptionInit }) => {
+      console.log('Received answer from:', data.userId);
       const peerConnection = this.peerConnections.get(data.userId);
       if (peerConnection) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+        try {
+          await peerConnection.connection.setRemoteDescription(new RTCSessionDescription(data.answer));
+        } catch (error) {
+          console.error('Error setting remote description:', error);
+        }
       }
-    } catch (error) {
-      console.error('Error handling answer:', error);
-    }
-  }
+    });
 
-  private async handleIceCandidate(data: any) {
-    try {
+    this.socket.on('ice-candidate', async (data: { userId: string, candidate: RTCIceCandidateInit }) => {
+      console.log('Received ICE candidate from:', data.userId);
       const peerConnection = this.peerConnections.get(data.userId);
-      if (peerConnection) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+      if (peerConnection && data.candidate) {
+        try {
+          await peerConnection.connection.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (error) {
+          console.error('Error adding ice candidate:', error);
+        }
       }
-    } catch (error) {
-      console.error('Error handling ICE candidate:', error);
-    }
-  }
+    });
 
-  private handleUserDisconnected(userId: string) {
-    // Close and remove peer connection
-    const peerConnection = this.peerConnections.get(userId);
-    if (peerConnection) {
-      peerConnection.close();
-      this.peerConnections.delete(userId);
-    }
-    
-    // Remove data channel
-    this.dataChannels.delete(userId);
-    
-    // Remove remote stream
-    this.remoteStreams.delete(userId);
-    
-    // Notify user
-    toast({
-      title: "User disconnected",
-      description: `User ${userId} has left the meeting`,
+    this.socket.on('user-left', (data: { userId: string }) => {
+      console.log('User left:', data.userId);
+      this.removePeerConnection(data.userId);
+    });
+
+    this.socket.on('chat-message', (message: Message) => {
+      console.log('Received message:', message);
+      if (this.onMessageCallback) {
+        this.onMessageCallback(message);
+      }
     });
   }
 
-  private sendSignal(data: any) {
-    if (this.socket && this.socket.connected) {
-      this.socket.emit('signal', data);
+  private async createPeerConnection(userId: string, isInitiator: boolean): Promise<PeerConnection> {
+    if (this.peerConnections.has(userId)) {
+      return this.peerConnections.get(userId)!;
     }
-  }
 
-  // Join a meeting room
-  async joinRoom(roomId: string): Promise<void> {
-    try {
-      this.roomId = roomId;
-      
-      if (this.socket) {
-        this.socket.emit('join-room', {
-          roomId,
-          userId: this.userId
-        });
-        
-        // Listen for existing users in the room
-        this.socket.on('room-users', async (users) => {
-          console.log('Users in room:', users);
-          
-          // Create peer connections with all existing users
-          for (const userId of users) {
-            if (userId !== this.userId) {
-              try {
-                const peerConnection = await this.createPeerConnection(userId);
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                
-                this.sendSignal({
-                  type: 'offer',
-                  userId: this.userId,
-                  targetUserId: userId,
-                  offer,
-                  roomId
-                });
-              } catch (error) {
-                console.error(`Error connecting to user ${userId}:`, error);
-              }
-            }
-          }
+    const peerConnection = new RTCPeerConnection(this.iceServers);
+    const peerData: PeerConnection = {
+      id: userId,
+      connection: peerConnection
+    };
+    
+    this.peerConnections.set(userId, peerData);
+
+    // Add local tracks to the peer connection
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => {
+        if (this.localStream) {
+          peerConnection.addTrack(track, this.localStream);
+        }
+      });
+    }
+
+    // Add screen share track if active
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(track => {
+        if (this.screenStream) {
+          peerConnection.addTrack(track, this.screenStream);
+        }
+      });
+    }
+
+    // Handle ICE candidates
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('Sending ICE candidate to:', userId);
+        this.socket?.emit('ice-candidate', {
+          userId: userId,
+          candidate: event.candidate
         });
       }
-    } catch (error) {
-      console.error('Error joining room:', error);
-      toast({
-        title: "Failed to join meeting",
-        description: "Could not connect to the meeting room",
-        variant: "destructive",
-      });
-      throw error;
+    };
+
+    // Handle new remote tracks
+    peerConnection.ontrack = (event) => {
+      console.log('Received remote track from:', userId);
+      const stream = event.streams[0];
+      
+      if (!peerData.stream) {
+        peerData.stream = stream;
+        
+        if (this.onNewStreamCallback) {
+          console.log('Calling onNewStreamCallback with stream:', stream.id);
+          this.onNewStreamCallback(stream);
+        }
+      } else {
+        // Add track to existing stream
+        const existingStream = peerData.stream;
+        event.track.onunmute = () => {
+          if (!existingStream.getTracks().some(t => t.id === event.track.id)) {
+            existingStream.addTrack(event.track);
+          }
+        };
+      }
+    };
+
+    // If we're the initiator, send an offer
+    if (isInitiator && this.socket) {
+      try {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        
+        this.socket.emit('offer', {
+          userId: userId,
+          offer: peerConnection.localDescription
+        });
+      } catch (error) {
+        console.error('Error creating offer:', error);
+      }
+    }
+
+    return peerData;
+  }
+
+  private removePeerConnection(userId: string): void {
+    const peerConnection = this.peerConnections.get(userId);
+    if (peerConnection) {
+      peerConnection.connection.close();
+      this.peerConnections.delete(userId);
     }
   }
 
-  async getLocalStream(audio = true, video = true): Promise<MediaStream> {
+  public async connect(): Promise<void> {
+    // Use a public STUN/TURN service for development
+    // In production, you would use your own server
+    this.socket = io('https://meetlink-signaling.onrender.com');
+    
+    // Fallback to local connection for testing
+    if (!this.socket.connected) {
+      console.log("Trying fallback connection");
+      this.socket = io('http://localhost:3001');
+    }
+    
+    this.setupSocketEvents();
+  }
+
+  public async getLocalStream(): Promise<MediaStream> {
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio,
-        video,
+        audio: true,
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
       });
       return this.localStream;
     } catch (error) {
-      console.error("Error accessing media devices:", error);
-      toast({
-        title: "Camera/Microphone Error",
-        description: "Could not access your camera or microphone",
-        variant: "destructive",
-      });
+      console.error('Error getting local stream:', error);
       throw error;
     }
   }
 
-  async startScreenShare(): Promise<MediaStream | null> {
+  public async joinRoom(roomId: string): Promise<void> {
+    this.roomId = roomId;
+    await this.connect();
+    
+    if (!this.socket) {
+      throw new Error('Socket connection failed');
+    }
+    
+    if (!this.localStream) {
+      await this.getLocalStream();
+    }
+    
+    this.socket.emit('join-room', {
+      roomId: this.roomId,
+      userId: this.localId,
+      username: this.username
+    });
+  }
+
+  public onNewRemoteStream(callback: (stream: MediaStream) => void): void {
+    this.onNewStreamCallback = callback;
+  }
+
+  public onMessage(callback: (message: Message) => void): void {
+    this.onMessageCallback = callback;
+  }
+
+  public sendMessage(text: string): void {
+    if (!this.socket) return;
+    
+    const message: Message = {
+      id: uuidv4(),
+      sender: this.username,
+      text,
+      timestamp: new Date()
+    };
+    
+    this.socket.emit('chat-message', {
+      roomId: this.roomId,
+      message
+    });
+    
+    // Also call the callback so the sender sees their own message
+    if (this.onMessageCallback) {
+      this.onMessageCallback(message);
+    }
+  }
+
+  public async startScreenShare(): Promise<MediaStream | null> {
     try {
-      // @ts-ignore - TypeScript doesn't recognize getDisplayMedia on mediaDevices
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
+        audio: true
       });
       
-      // Replace video track with screen track in all peer connections
-      if (this.localStream && this.screenStream) {
-        const videoTrack = this.screenStream.getVideoTracks()[0];
-        
-        this.peerConnections.forEach(peerConnection => {
-          const senders = peerConnection.getSenders();
-          const videoSender = senders.find(sender => 
-            sender.track && sender.track.kind === 'video'
-          );
-          
-          if (videoSender) {
-            videoSender.replaceTrack(videoTrack);
-          }
-        });
+      // Add screen tracks to all peer connections
+      for (const [userId, peer] of this.peerConnections.entries()) {
+        if (this.screenStream) {
+          this.screenStream.getTracks().forEach(track => {
+            if (this.screenStream) {
+              peer.connection.addTrack(track, this.screenStream);
+            }
+          });
+        }
       }
       
       return this.screenStream;
     } catch (error) {
-      console.error("Error sharing screen:", error);
-      toast({
-        title: "Screen Sharing Error",
-        description: "Could not share your screen",
-        variant: "destructive",
-      });
+      console.error('Error starting screen share:', error);
       return null;
     }
   }
 
-  stopScreenShare(): void {
+  public stopScreenShare(): void {
     if (this.screenStream) {
-      this.screenStream.getTracks().forEach(track => track.stop());
-      
-      // Replace screen track with video track in all peer connections
-      if (this.localStream) {
-        const videoTrack = this.localStream.getVideoTracks()[0];
-        
-        this.peerConnections.forEach(peerConnection => {
-          const senders = peerConnection.getSenders();
-          const videoSender = senders.find(sender => 
-            sender.track && sender.track.kind === 'video'
-          );
-          
-          if (videoSender && videoTrack) {
-            videoSender.replaceTrack(videoTrack);
-          }
-        });
-      }
-      
-      this.screenStream = null;
-    }
-  }
-
-  onNewRemoteStream(callback: MediaStreamHandler): void {
-    this.onNewRemoteStreamCallbacks.push(callback);
-    
-    // Also send existing remote streams to the new callback
-    this.remoteStreams.forEach(stream => {
-      callback(stream);
-    });
-  }
-
-  onMessage(callback: DataChannelMessageHandler): void {
-    this.onMessageCallbacks.push(callback);
-  }
-
-  sendMessage(message: string): void {
-    const formattedMessage = {
-      id: uuidv4(),
-      sender: "You",
-      text: message,
-      timestamp: new Date(),
-    };
-    
-    // Broadcast to all data channels
-    this.dataChannels.forEach(dataChannel => {
-      if (dataChannel.readyState === 'open') {
-        dataChannel.send(JSON.stringify(formattedMessage));
-      }
-    });
-    
-    // Also send through socket for users without data channel yet
-    if (this.socket) {
-      this.socket.emit('chat-message', {
-        ...formattedMessage,
-        roomId: this.roomId
+      this.screenStream.getTracks().forEach(track => {
+        track.stop();
       });
+      this.screenStream = null;
+      
+      // Renegotiate connections to remove screen tracks
+      for (const [userId, peer] of this.peerConnections.entries()) {
+        this.createPeerConnection(userId, true);
+      }
     }
-    
-    // Notify local callbacks about the message
-    this.onMessageCallbacks.forEach(callback => callback(formattedMessage));
   }
 
-  disconnect(): void {
-    // Stop all media tracks
+  public disconnect(): void {
     if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop());
+      this.localStream.getTracks().forEach(track => {
+        track.stop();
+      });
       this.localStream = null;
     }
     
     if (this.screenStream) {
-      this.screenStream.getTracks().forEach(track => track.stop());
+      this.screenStream.getTracks().forEach(track => {
+        track.stop();
+      });
       this.screenStream = null;
     }
     
-    // Close all peer connections
-    this.peerConnections.forEach(connection => {
-      connection.close();
-    });
-    
-    // Clear all collections
+    for (const [userId, peer] of this.peerConnections.entries()) {
+      peer.connection.close();
+    }
     this.peerConnections.clear();
-    this.dataChannels.clear();
-    this.remoteStreams.clear();
-    this.onNewRemoteStreamCallbacks = [];
-    this.onMessageCallbacks = [];
     
-    // Leave room and disconnect socket
     if (this.socket) {
-      if (this.roomId) {
-        this.socket.emit('leave-room', {
-          roomId: this.roomId,
-          userId: this.userId
-        });
-      }
       this.socket.disconnect();
       this.socket = null;
     }
-    
-    this.roomId = null;
   }
 }
 
-// Singleton instance
 export const webRTCService = new WebRTCService();

@@ -1,69 +1,60 @@
-# Welcome to your Lovable project
 
-## Project info
+# MeetLink - Video Conferencing Application
 
-**URL**: https://lovable.dev/projects/d4a3a6f8-ffad-41b5-9a9f-6073c686d4b2
+MeetLink is a web-based video conferencing application with features similar to Zoom or Google Meet.
 
-## How can I edit this code?
+## Features
 
-There are several ways of editing your application.
+- Real-time video and audio calls
+- Screen sharing
+- Text chat during meetings
+- Responsive design for desktop and mobile
+- Simple meeting creation and joining
 
-**Use Lovable**
+## Running the Application
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/d4a3a6f8-ffad-41b5-9a9f-6073c686d4b2) and start prompting.
+1. Clone this repository
+2. Install dependencies:
+   ```
+   npm install
+   ```
+3. Start the React application:
+   ```
+   npm run dev
+   ```
 
-Changes made via Lovable will be committed automatically to this repo.
+## Setting up the Signaling Server
 
-**Use your preferred IDE**
+The signaling server is required for WebRTC connection establishment. Follow these steps to set it up:
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+1. Navigate to the signaling-server directory:
+   ```
+   cd signaling-server
+   ```
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+2. Install dependencies:
+   ```
+   npm install
+   ```
 
-Follow these steps:
+3. Start the server:
+   ```
+   npm start
+   ```
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+The signaling server will run on port 3001 by default.
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+## Deploying to Production
 
-# Step 3: Install the necessary dependencies.
-npm i
+For production use, you should deploy both:
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
+1. The React application (e.g., to Netlify, Vercel, or similar services)
+2. The signaling server (e.g., to Heroku, Render, or similar services)
 
-**Edit a file directly in GitHub**
+Update the WebRTC service to use your production signaling server URL.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Development Notes
 
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with .
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/d4a3a6f8-ffad-41b5-9a9f-6073c686d4b2) and click on Share -> Publish.
-
-## I want to use a custom domain - is that possible?
-
-We don't support custom domains (yet). If you want to deploy your project under your own domain then we recommend using Netlify. Visit our docs for more details: [Custom domains](https://docs.lovable.dev/tips-tricks/custom-domain/)
+- The WebRTC implementation uses a simple peer-to-peer mesh architecture, which works well for small groups (up to 6-8 participants).
+- For larger meetings, consider implementing a Selective Forwarding Unit (SFU) architecture.
+- For production, you should implement proper authentication and security measures.
