@@ -28,19 +28,36 @@ const MeetingRoom = () => {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isJoining, setIsJoining] = useState(true);
 
   useEffect(() => {
     const initializeMedia = async () => {
       try {
+        setIsJoining(true);
+        
+        // Get local media stream
         const stream = await webRTCService.getLocalStream();
         setLocalStream(stream);
         
-        // Mock remote participants for demo purposes
+        // Join the meeting room
+        if (meetingId) {
+          await webRTCService.joinRoom(meetingId);
+        }
+        
+        // Listen for remote streams
         webRTCService.onNewRemoteStream((stream) => {
-          setRemoteStreams((prev) => [...prev, stream]);
+          setRemoteStreams((prev) => {
+            // Check if stream is already in the array to avoid duplicates
+            const exists = prev.some(s => 
+              s.id === stream.id || 
+              s.getTracks().some(t => stream.getTracks().some(st => st.id === t.id))
+            );
+            if (exists) return prev;
+            return [...prev, stream];
+          });
         });
         
-        // Handle chat messages
+        // Listen for chat messages
         webRTCService.onMessage((message) => {
           setMessages((prev) => [...prev, message as Message]);
         });
@@ -49,8 +66,16 @@ const MeetingRoom = () => {
           title: "Meeting joined successfully",
           description: `You've joined meeting: ${meetingId}`,
         });
+        
+        setIsJoining(false);
       } catch (error) {
         console.error("Failed to initialize media:", error);
+        setIsJoining(false);
+        toast({
+          title: "Failed to join meeting",
+          description: "Could not connect to the meeting room",
+          variant: "destructive",
+        });
       }
     };
 
@@ -99,6 +124,7 @@ const MeetingRoom = () => {
         stream.getVideoTracks()[0].onended = () => {
           setIsScreenSharing(false);
           setScreenStream(null);
+          webRTCService.stopScreenShare();
         };
       }
     } catch (error) {
@@ -133,49 +159,60 @@ const MeetingRoom = () => {
     <div className="flex flex-col h-screen bg-background">
       <MeetHeader meetingId={meetingId || ""} />
       
-      <main className="flex-1 flex flex-col p-4 overflow-hidden">
-        <div 
-          className="grid gap-4 flex-1 overflow-hidden"
-          style={{ 
-            gridTemplateColumns: getGridTemplateColumns(),
-            gridAutoRows: "1fr"
-          }}
-        >
-          {/* Screen share takes precedence if active */}
-          {isScreenSharing && screenStream && (
-            <div className="col-span-full row-span-2 video-container">
-              <VideoPlayer 
-                stream={screenStream} 
-                username="Your screen" 
-                isLocal
-                isVideoEnabled={true}
-              />
+      {isJoining ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-current border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]" role="status">
+              <span className="!absolute !-m-px !h-px !w-px !overflow-hidden !whitespace-nowrap !border-0 !p-0 ![clip:rect(0,0,0,0)]">Loading...</span>
             </div>
-          )}
-          
-          {/* Local user video */}
-          <div className="video-container">
-            <VideoPlayer 
-              stream={localStream} 
-              isLocal
-              isMuted={!isAudioEnabled}
-              isVideoEnabled={isVideoEnabled}
-            />
+            <p className="mt-4 text-lg">Joining the meeting...</p>
           </div>
-          
-          {/* Remote users */}
-          {remoteStreams.map((stream, index) => (
-            <div key={index} className="video-container">
+        </div>
+      ) : (
+        <main className="flex-1 flex flex-col p-4 overflow-hidden">
+          <div 
+            className="grid gap-4 flex-1 overflow-hidden"
+            style={{ 
+              gridTemplateColumns: getGridTemplateColumns(),
+              gridAutoRows: "1fr"
+            }}
+          >
+            {/* Screen share takes precedence if active */}
+            {isScreenSharing && screenStream && (
+              <div className="col-span-full row-span-2 video-container">
+                <VideoPlayer 
+                  stream={screenStream} 
+                  username="Your screen" 
+                  isLocal
+                  isVideoEnabled={true}
+                />
+              </div>
+            )}
+            
+            {/* Local user video */}
+            <div className="video-container">
               <VideoPlayer 
-                stream={stream} 
-                username={`User ${index + 1}`}
-                isMuted={false}
-                isVideoEnabled={true}
+                stream={localStream} 
+                isLocal
+                isMuted={!isAudioEnabled}
+                isVideoEnabled={isVideoEnabled}
               />
             </div>
-          ))}
-        </div>
-      </main>
+            
+            {/* Remote users */}
+            {remoteStreams.map((stream, index) => (
+              <div key={index} className="video-container">
+                <VideoPlayer 
+                  stream={stream} 
+                  username={`User ${index + 1}`}
+                  isMuted={false}
+                  isVideoEnabled={true}
+                />
+              </div>
+            ))}
+          </div>
+        </main>
+      )}
       
       <VideoControls 
         isAudioEnabled={isAudioEnabled}
